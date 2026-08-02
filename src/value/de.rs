@@ -11,13 +11,81 @@ use core::fmt;
 use core::slice;
 use core::str::FromStr;
 use serde::de::{
-    self, Deserialize, DeserializeSeed, Deserializer as _, EnumAccess, Expected, IntoDeserializer,
-    MapAccess, SeqAccess, Unexpected, VariantAccess, Visitor,
+    self, Buffer, Deserialize, DeserializeSeed, Deserializer as _, EnumAccess, Expected,
+    IntoDeserializer, MapAccess, SeqAccess, Unexpected, VariantAccess, Visitor,
 };
 use serde::forward_to_deserialize_any;
 
 #[cfg(feature = "arbitrary_precision")]
 use crate::number::NumberFromString;
+
+pub(crate) struct ValueBuffer(Value);
+
+impl ValueBuffer {
+    pub(crate) fn new(value: Value) -> Self {
+        ValueBuffer(value)
+    }
+}
+
+impl<'de> Buffer<'de> for ValueBuffer {
+    type Error = Error;
+    type OwnedDeserializer = Value;
+    type RefDeserializer<'a>
+        = Value
+    where
+        'de: 'a;
+
+    fn owned_deserializer(self) -> Self::OwnedDeserializer {
+        self.0
+    }
+
+    fn ref_deserializer<'a>(&'a self) -> Self::RefDeserializer<'a>
+    where
+        'de: 'a,
+    {
+        self.0.clone()
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        self.0.as_str()
+    }
+}
+
+pub(crate) struct KeyBuffer(String);
+
+impl KeyBuffer {
+    pub(crate) fn new(key: String) -> Self {
+        KeyBuffer(key)
+    }
+}
+
+impl<'de> Buffer<'de> for KeyBuffer {
+    type Error = Error;
+    type OwnedDeserializer = MapKeyDeserializer<'de>;
+    type RefDeserializer<'a>
+        = MapKeyDeserializer<'de>
+    where
+        'de: 'a;
+
+    fn owned_deserializer(self) -> Self::OwnedDeserializer {
+        MapKeyDeserializer {
+            key: Cow::Owned(self.0),
+        }
+    }
+
+    fn ref_deserializer<'a>(&'a self) -> Self::RefDeserializer<'a>
+    where
+        'de: 'a,
+    {
+        MapKeyDeserializer {
+            key: Cow::Owned(self.0.clone()),
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        Some(&self.0)
+    }
+}
 
 impl<'de> Deserialize<'de> for Value {
     #[inline]
@@ -649,6 +717,12 @@ impl<'de> SeqAccess<'de> for SeqDeserializer {
             _ => None,
         }
     }
+
+    fn next_element_buffer(
+        &mut self,
+    ) -> Result<Option<impl Buffer<'de, Error = Self::Error> + use<'de>>, Self::Error> {
+        Ok(self.iter.next().map(ValueBuffer::new))
+    }
 }
 
 struct MapDeserializer {
@@ -698,6 +772,27 @@ impl<'de> MapAccess<'de> for MapDeserializer {
         match self.iter.size_hint() {
             (lower, Some(upper)) if lower == upper => Some(upper),
             _ => None,
+        }
+    }
+
+    fn next_key_buffer(
+        &mut self,
+    ) -> Result<Option<impl Buffer<'de, Error = Self::Error> + use<'de>>, Self::Error> {
+        match self.iter.next() {
+            Some((key, value)) => {
+                self.value = Some(value);
+                Ok(Some(KeyBuffer::new(key)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn next_value_buffer(
+        &mut self,
+    ) -> Result<impl Buffer<'de, Error = Self::Error> + use<'de>, Self::Error> {
+        match self.value.take() {
+            Some(value) => Ok(ValueBuffer::new(value)),
+            None => Err(serde::de::Error::custom("value is missing")),
         }
     }
 }
@@ -1157,6 +1252,12 @@ impl<'de> SeqAccess<'de> for SeqRefDeserializer<'de> {
             _ => None,
         }
     }
+
+    fn next_element_buffer(
+        &mut self,
+    ) -> Result<Option<impl Buffer<'de, Error = Self::Error> + use<'de>>, Self::Error> {
+        Ok(self.iter.next().cloned().map(ValueBuffer::new))
+    }
 }
 
 struct MapRefDeserializer<'de> {
@@ -1208,9 +1309,30 @@ impl<'de> MapAccess<'de> for MapRefDeserializer<'de> {
             _ => None,
         }
     }
+
+    fn next_key_buffer(
+        &mut self,
+    ) -> Result<Option<impl Buffer<'de, Error = Self::Error> + use<'de>>, Self::Error> {
+        match self.iter.next() {
+            Some((key, value)) => {
+                self.value = Some(value);
+                Ok(Some(KeyBuffer::new(key.clone())))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn next_value_buffer(
+        &mut self,
+    ) -> Result<impl Buffer<'de, Error = Self::Error> + use<'de>, Self::Error> {
+        match self.value.take() {
+            Some(value) => Ok(ValueBuffer::new(value.clone())),
+            None => Err(serde::de::Error::custom("value is missing")),
+        }
+    }
 }
 
-struct MapKeyDeserializer<'de> {
+pub(crate) struct MapKeyDeserializer<'de> {
     key: Cow<'de, str>,
 }
 

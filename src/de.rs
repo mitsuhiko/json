@@ -5,6 +5,7 @@ use crate::error::{Error, ErrorCode, Result};
 use crate::lexical;
 use crate::number::Number;
 use crate::read::{self, Fused, Reference};
+use crate::value::de::{KeyBuffer, ValueBuffer};
 use alloc::string::String;
 use alloc::vec::Vec;
 #[cfg(feature = "float_roundtrip")]
@@ -1466,6 +1467,10 @@ impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
         }
     }
 
+    fn deserialize_buffer(self) -> Result<impl de::Buffer<'de, Error = Self::Error>> {
+        de::Deserialize::deserialize(self).map(ValueBuffer::new)
+    }
+
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
@@ -1967,6 +1972,12 @@ impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
             Ok(None)
         }
     }
+
+    fn next_element_buffer(
+        &mut self,
+    ) -> Result<Option<impl de::Buffer<'de, Error = Self::Error> + use<'de, 'a, R>>> {
+        de::SeqAccess::next_element(self).map(|value| value.map(ValueBuffer::new))
+    }
 }
 
 struct MapAccess<'a, R: 'a> {
@@ -2031,6 +2042,18 @@ impl<'de, 'a, R: Read<'de> + 'a> de::MapAccess<'de> for MapAccess<'a, R> {
         tri!(self.de.parse_object_colon());
 
         seed.deserialize(&mut *self.de)
+    }
+
+    fn next_key_buffer(
+        &mut self,
+    ) -> Result<Option<impl de::Buffer<'de, Error = Self::Error> + use<'de, 'a, R>>> {
+        de::MapAccess::next_key(self).map(|key| key.map(KeyBuffer::new))
+    }
+
+    fn next_value_buffer(
+        &mut self,
+    ) -> Result<impl de::Buffer<'de, Error = Self::Error> + use<'de, 'a, R>> {
+        de::MapAccess::next_value(self).map(ValueBuffer::new)
     }
 }
 
