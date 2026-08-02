@@ -727,7 +727,7 @@ impl<'de> de::ExtensionAccess<'de> for NumberExtensionAccess {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_string(self.number.take().unwrap())
+        visitor.visit_string(self.number.as_ref().unwrap().clone())
     }
 
     fn deserialize_fallback<V>(self, visitor: V) -> Result<V::Value, Self::Error>
