@@ -2055,6 +2055,32 @@ fn offset_buffer_result<T>(result: Result<T>, line: usize, column: usize) -> Res
 }
 
 #[cfg(feature = "raw_value")]
+macro_rules! deserialize_buffered_value {
+    ($this:ident, $method:ident $(, $arg:expr)*) => {{
+        let result = match $this.raw {
+            RawFragment::Borrowed(raw) => de::Deserializer::$method(
+                &mut Deserializer::from_str(raw)
+                $(, $arg)*
+            ),
+            RawFragment::Owned(_raw) => {
+                #[cfg(feature = "std")]
+                {
+                    de::Deserializer::$method(
+                        &mut Deserializer::from_reader(_raw.as_bytes())
+                        $(, $arg)*
+                    )
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    de::Deserializer::$method($this.value $(, $arg)*)
+                }
+            }
+        };
+        offset_buffer_result(result, $this.line, $this.column)
+    }};
+}
+
+#[cfg(feature = "raw_value")]
 macro_rules! delegate_buffered_value {
     ($($method:ident)*) => {
         $(
@@ -2062,25 +2088,7 @@ macro_rules! delegate_buffered_value {
             where
                 V: de::Visitor<'de>,
             {
-                let result = match self.raw {
-                    RawFragment::Borrowed(raw) => {
-                        de::Deserializer::$method(&mut Deserializer::from_str(raw), visitor)
-                    }
-                    RawFragment::Owned(_raw) => {
-                        #[cfg(feature = "std")]
-                        {
-                            de::Deserializer::$method(
-                                &mut Deserializer::from_reader(_raw.as_bytes()),
-                                visitor,
-                            )
-                        }
-                        #[cfg(not(feature = "std"))]
-                        {
-                            de::Deserializer::$method(self.value, visitor)
-                        }
-                    }
-                };
-                offset_buffer_result(result, self.line, self.column)
+                deserialize_buffered_value!(self, $method, visitor)
             }
         )*
     };
@@ -2103,82 +2111,21 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let result = match self.raw {
-            RawFragment::Borrowed(raw) => de::Deserializer::deserialize_unit_struct(
-                &mut Deserializer::from_str(raw),
-                name,
-                visitor,
-            ),
-            RawFragment::Owned(_raw) => {
-                #[cfg(feature = "std")]
-                {
-                    de::Deserializer::deserialize_unit_struct(
-                        &mut Deserializer::from_reader(_raw.as_bytes()),
-                        name,
-                        visitor,
-                    )
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    de::Deserializer::deserialize_unit_struct(self.value, name, visitor)
-                }
-            }
-        };
-        offset_buffer_result(result, self.line, self.column)
+        deserialize_buffered_value!(self, deserialize_unit_struct, name, visitor)
     }
 
     fn deserialize_newtype_struct<V>(self, name: &'static str, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        let result = match self.raw {
-            RawFragment::Borrowed(raw) => de::Deserializer::deserialize_newtype_struct(
-                &mut Deserializer::from_str(raw),
-                name,
-                visitor,
-            ),
-            RawFragment::Owned(_raw) => {
-                #[cfg(feature = "std")]
-                {
-                    de::Deserializer::deserialize_newtype_struct(
-                        &mut Deserializer::from_reader(_raw.as_bytes()),
-                        name,
-                        visitor,
-                    )
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    de::Deserializer::deserialize_newtype_struct(self.value, name, visitor)
-                }
-            }
-        };
-        offset_buffer_result(result, self.line, self.column)
+        deserialize_buffered_value!(self, deserialize_newtype_struct, name, visitor)
     }
 
     fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        let result = match self.raw {
-            RawFragment::Borrowed(raw) => {
-                de::Deserializer::deserialize_tuple(&mut Deserializer::from_str(raw), len, visitor)
-            }
-            RawFragment::Owned(_raw) => {
-                #[cfg(feature = "std")]
-                {
-                    de::Deserializer::deserialize_tuple(
-                        &mut Deserializer::from_reader(_raw.as_bytes()),
-                        len,
-                        visitor,
-                    )
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    de::Deserializer::deserialize_tuple(self.value, len, visitor)
-                }
-            }
-        };
-        offset_buffer_result(result, self.line, self.column)
+        deserialize_buffered_value!(self, deserialize_tuple, len, visitor)
     }
 
     fn deserialize_tuple_struct<V>(
@@ -2190,30 +2137,7 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let result = match self.raw {
-            RawFragment::Borrowed(raw) => de::Deserializer::deserialize_tuple_struct(
-                &mut Deserializer::from_str(raw),
-                name,
-                len,
-                visitor,
-            ),
-            RawFragment::Owned(_raw) => {
-                #[cfg(feature = "std")]
-                {
-                    de::Deserializer::deserialize_tuple_struct(
-                        &mut Deserializer::from_reader(_raw.as_bytes()),
-                        name,
-                        len,
-                        visitor,
-                    )
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    de::Deserializer::deserialize_tuple_struct(self.value, name, len, visitor)
-                }
-            }
-        };
-        offset_buffer_result(result, self.line, self.column)
+        deserialize_buffered_value!(self, deserialize_tuple_struct, name, len, visitor)
     }
 
     fn deserialize_struct<V>(
@@ -2225,30 +2149,7 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let result = match self.raw {
-            RawFragment::Borrowed(raw) => de::Deserializer::deserialize_struct(
-                &mut Deserializer::from_str(raw),
-                name,
-                fields,
-                visitor,
-            ),
-            RawFragment::Owned(_raw) => {
-                #[cfg(feature = "std")]
-                {
-                    de::Deserializer::deserialize_struct(
-                        &mut Deserializer::from_reader(_raw.as_bytes()),
-                        name,
-                        fields,
-                        visitor,
-                    )
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    de::Deserializer::deserialize_struct(self.value, name, fields, visitor)
-                }
-            }
-        };
-        offset_buffer_result(result, self.line, self.column)
+        deserialize_buffered_value!(self, deserialize_struct, name, fields, visitor)
     }
 
     fn deserialize_enum<V>(
@@ -2260,30 +2161,7 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let result = match self.raw {
-            RawFragment::Borrowed(raw) => de::Deserializer::deserialize_enum(
-                &mut Deserializer::from_str(raw),
-                name,
-                variants,
-                visitor,
-            ),
-            RawFragment::Owned(_raw) => {
-                #[cfg(feature = "std")]
-                {
-                    de::Deserializer::deserialize_enum(
-                        &mut Deserializer::from_reader(_raw.as_bytes()),
-                        name,
-                        variants,
-                        visitor,
-                    )
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    de::Deserializer::deserialize_enum(self.value, name, variants, visitor)
-                }
-            }
-        };
-        offset_buffer_result(result, self.line, self.column)
+        deserialize_buffered_value!(self, deserialize_enum, name, variants, visitor)
     }
 
     fn deserialize_extension<T>(self, request: T) -> Result<T::Value>
