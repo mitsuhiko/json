@@ -9,13 +9,19 @@ use alloc::string::{String, ToString};
 use core::fmt::{self, Debug, Display};
 #[cfg(not(feature = "arbitrary_precision"))]
 use core::hash::{Hash, Hasher};
+#[cfg(feature = "arbitrary_precision")]
+use serde::de::DeserializeExtension;
 use serde::de::{self, Unexpected, Visitor};
 #[cfg(feature = "arbitrary_precision")]
 use serde::de::{IntoDeserializer, MapAccess};
+#[cfg(feature = "arbitrary_precision")]
+use serde::ser::{SerializeExtension, SerializeStruct};
 use serde::{forward_to_deserialize_any, Deserialize, Deserializer, Serialize, Serializer};
 
 #[cfg(feature = "arbitrary_precision")]
 pub(crate) const TOKEN: &str = "$serde_json::private::Number";
+#[cfg(feature = "arbitrary_precision")]
+pub(crate) const EXTENSION: serde::ExtensionId = serde::ExtensionId::new("serde_json/number@1");
 
 /// Represents a JSON number, whether integer or floating point.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -387,11 +393,33 @@ impl Serialize for Number {
     where
         S: Serializer,
     {
-        use serde::ser::SerializeStruct;
+        serializer.serialize_extension(&NumberExtension(&self.n))
+    }
+}
 
-        let mut s = tri!(serializer.serialize_struct(TOKEN, 1));
-        tri!(s.serialize_field(TOKEN, &self.n));
-        s.end()
+#[cfg(feature = "arbitrary_precision")]
+struct NumberExtension<'a>(&'a str);
+
+#[cfg(feature = "arbitrary_precision")]
+impl SerializeExtension for NumberExtension<'_> {
+    fn id(&self) -> serde::ExtensionId {
+        EXTENSION
+    }
+
+    fn serialize_payload<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.0)
+    }
+
+    fn serialize_fallback<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = tri!(serializer.serialize_struct(TOKEN, 1));
+        tri!(state.serialize_field(TOKEN, self.0));
+        state.end()
     }
 }
 
@@ -455,6 +483,39 @@ impl<'de> Deserialize<'de> for Number {
             }
         }
 
+        #[cfg(feature = "arbitrary_precision")]
+        {
+            struct Request;
+
+            impl<'de, E> DeserializeExtension<'de, E> for Request
+            where
+                E: de::Error,
+            {
+                type Value = Number;
+
+                fn id(&self) -> serde::ExtensionId {
+                    EXTENSION
+                }
+
+                fn deserialize_payload<D>(self, deserializer: D) -> Result<Number, E>
+                where
+                    D: Deserializer<'de, Error = E>,
+                {
+                    NumberFromString::deserialize(deserializer).map(|number| number.value)
+                }
+
+                fn deserialize_fallback<D>(self, deserializer: D) -> Result<Number, E>
+                where
+                    D: Deserializer<'de, Error = E>,
+                {
+                    deserializer.deserialize_any(NumberVisitor)
+                }
+            }
+
+            deserializer.deserialize_extension(Request)
+        }
+
+        #[cfg(not(feature = "arbitrary_precision"))]
         deserializer.deserialize_any(NumberVisitor)
     }
 }
@@ -564,7 +625,7 @@ macro_rules! deserialize_any {
                 }
             }
 
-            visitor.visit_map(NumberDeserializer {
+            visitor.visit_extension(NumberExtensionAccess {
                 number: Some(self.$($num_string)*),
             })
         }
@@ -646,6 +707,36 @@ impl<'de> Deserializer<'de> for &Number {
         bool char str string bytes byte_buf option unit unit_struct
         newtype_struct seq tuple tuple_struct map struct enum identifier
         ignored_any
+    }
+}
+
+#[cfg(feature = "arbitrary_precision")]
+pub(crate) struct NumberExtensionAccess {
+    pub number: Option<String>,
+}
+
+#[cfg(feature = "arbitrary_precision")]
+impl<'de> de::ExtensionAccess<'de> for NumberExtensionAccess {
+    type Error = Error;
+
+    fn id(&self) -> serde::ExtensionId {
+        EXTENSION
+    }
+
+    fn deserialize_payload<V>(&mut self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_string(self.number.take().unwrap())
+    }
+
+    fn deserialize_fallback<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_map(NumberDeserializer {
+            number: self.number,
+        })
     }
 }
 

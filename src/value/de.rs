@@ -4,7 +4,7 @@ use crate::number::Number;
 use crate::value::Value;
 use alloc::borrow::{Cow, ToOwned};
 use alloc::string::String;
-#[cfg(feature = "raw_value")]
+#[cfg(any(feature = "arbitrary_precision", feature = "raw_value"))]
 use alloc::string::ToString;
 use alloc::vec::{self, Vec};
 use core::fmt;
@@ -281,6 +281,12 @@ where
 impl<'de> serde::Deserializer<'de> for Map<String, Value> {
     type Error = Error;
 
+    fn deserialize_buffer(
+        self,
+    ) -> Result<impl Buffer<'de, Error = Self::Error> + use<'de>, Self::Error> {
+        Ok(ValueBuffer::new(Value::Object(self)))
+    }
+
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
@@ -349,6 +355,29 @@ impl<'de> serde::Deserializer<'de> for Map<String, Value> {
 
 impl<'de> serde::Deserializer<'de> for Value {
     type Error = Error;
+
+    fn deserialize_buffer(
+        self,
+    ) -> Result<impl Buffer<'de, Error = Self::Error> + use<'de>, Self::Error> {
+        Ok(ValueBuffer::new(self))
+    }
+
+    fn deserialize_extension<T>(self, request: T) -> Result<T::Value, Self::Error>
+    where
+        T: de::DeserializeExtension<'de, Self::Error>,
+    {
+        #[cfg(feature = "arbitrary_precision")]
+        if request.id() == crate::number::EXTENSION {
+            return match self {
+                Value::Number(number) => {
+                    request.deserialize_payload(number.to_string().into_deserializer())
+                }
+                value => request.deserialize_fallback(value),
+            };
+        }
+
+        request.deserialize_fallback(self)
+    }
 
     #[inline]
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Error>
@@ -844,6 +873,12 @@ where
 impl<'de> serde::Deserializer<'de> for &'de Map<String, Value> {
     type Error = Error;
 
+    fn deserialize_buffer(
+        self,
+    ) -> Result<impl Buffer<'de, Error = Self::Error> + use<'de>, Self::Error> {
+        Ok(ValueBuffer::new(Value::Object(self.clone())))
+    }
+
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
@@ -911,6 +946,26 @@ impl<'de> serde::Deserializer<'de> for &'de Map<String, Value> {
 
 impl<'de> serde::Deserializer<'de> for &'de Value {
     type Error = Error;
+
+    fn deserialize_buffer(
+        self,
+    ) -> Result<impl Buffer<'de, Error = Self::Error> + use<'de>, Self::Error> {
+        Ok(ValueBuffer::new(self.clone()))
+    }
+
+    fn deserialize_extension<T>(self, request: T) -> Result<T::Value, Self::Error>
+    where
+        T: de::DeserializeExtension<'de, Self::Error>,
+    {
+        #[cfg(feature = "arbitrary_precision")]
+        if request.id() == crate::number::EXTENSION {
+            if let Value::Number(number) = self {
+                return request.deserialize_payload(number.to_string().into_deserializer());
+            }
+        }
+
+        request.deserialize_fallback(self)
+    }
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Error>
     where

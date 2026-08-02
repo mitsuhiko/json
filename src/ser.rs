@@ -379,6 +379,23 @@ where
         }
     }
 
+    fn serialize_extension<E>(self, extension: &E) -> Result<()>
+    where
+        E: ?Sized + ser::SerializeExtension,
+    {
+        #[cfg(feature = "arbitrary_precision")]
+        if extension.id() == crate::number::EXTENSION {
+            return extension.serialize_payload(NumberStrEmitter(self));
+        }
+
+        #[cfg(feature = "raw_value")]
+        if extension.id() == crate::raw::EXTENSION {
+            return extension.serialize_payload(RawValueStrEmitter(self));
+        }
+
+        extension.serialize_fallback(self)
+    }
+
     #[inline]
     fn serialize_struct_variant(
         self,

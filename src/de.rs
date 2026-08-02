@@ -5,20 +5,27 @@ use crate::error::{Error, ErrorCode, Result};
 use crate::lexical;
 use crate::number::Number;
 use crate::read::{self, Fused, Reference};
-use crate::value::de::{KeyBuffer, ValueBuffer};
+use crate::value::de::KeyBuffer;
+#[cfg(not(feature = "raw_value"))]
+use crate::value::de::ValueBuffer;
+#[cfg(feature = "raw_value")]
+use crate::value::Value;
+#[cfg(feature = "raw_value")]
+use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
+#[cfg(feature = "raw_value")]
+use core::fmt;
 #[cfg(feature = "float_roundtrip")]
 use core::iter;
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
 use core::result;
 use core::str::FromStr;
+#[cfg(feature = "arbitrary_precision")]
+use serde::de::IntoDeserializer;
 use serde::de::{self, Expected, Unexpected};
 use serde::forward_to_deserialize_any;
-
-#[cfg(feature = "arbitrary_precision")]
-use crate::number::NumberDeserializer;
 
 pub use crate::read::{Read, SliceRead, StrRead};
 
@@ -125,7 +132,11 @@ impl ParserNumber {
             ParserNumber::U64(x) => visitor.visit_u64(x),
             ParserNumber::I64(x) => visitor.visit_i64(x),
             #[cfg(feature = "arbitrary_precision")]
-            ParserNumber::String(x) => visitor.visit_map(NumberDeserializer { number: x.into() }),
+            ParserNumber::String(number) => {
+                visitor.visit_extension(crate::number::NumberExtensionAccess {
+                    number: Some(number),
+                })
+            }
         }
     }
 
@@ -1282,6 +1293,26 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         Ok(())
     }
 
+    fn capture_buffer(&mut self) -> Result<impl de::Buffer<'de, Error = Error> + use<'de, R>> {
+        #[cfg(feature = "raw_value")]
+        {
+            tri!(self.parse_whitespace());
+            let position = self.read.peek_position();
+            self.read.begin_raw_buffering();
+            let value = tri!(de::Deserialize::deserialize(&mut *self));
+            let raw = tri!(self.read.end_raw_buffering(RawFragmentVisitor));
+            Ok(RawValueBuffer {
+                value,
+                raw,
+                line: position.line,
+                column: position.column,
+            })
+        }
+
+        #[cfg(not(feature = "raw_value"))]
+        de::Deserialize::deserialize(&mut *self).map(ValueBuffer::new)
+    }
+
     #[cfg(feature = "raw_value")]
     fn deserialize_raw_value<V>(&mut self, visitor: V) -> Result<V::Value>
     where
@@ -1387,7 +1418,7 @@ macro_rules! check_recursion {
     };
 }
 
-impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
+impl<'de, 'a, R: Read<'de>> de::Deserializer<'de> for &'a mut Deserializer<R> {
     type Error = Error;
 
     #[inline]
@@ -1467,8 +1498,47 @@ impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
         }
     }
 
-    fn deserialize_buffer(self) -> Result<impl de::Buffer<'de, Error = Self::Error>> {
-        de::Deserialize::deserialize(self).map(ValueBuffer::new)
+    fn deserialize_buffer(self) -> Result<impl de::Buffer<'de, Error = Error> + use<'de, 'a, R>> {
+        self.capture_buffer()
+    }
+
+    fn deserialize_extension<T>(self, request: T) -> Result<T::Value>
+    where
+        T: de::DeserializeExtension<'de, Self::Error>,
+    {
+        #[cfg(feature = "arbitrary_precision")]
+        if request.id() == crate::number::EXTENSION {
+            tri!(self.parse_whitespace());
+            let mut number = String::with_capacity(16);
+            match tri!(self.peek()) {
+                Some(b'-') => {
+                    self.eat_char();
+                    number.push('-');
+                }
+                Some(b'0'..=b'9') => {}
+                _ => return Err(self.peek_error(ErrorCode::InvalidNumber)),
+            }
+            tri!(self.scan_integer(&mut number));
+            return request.deserialize_payload(number.into_deserializer());
+        }
+
+        #[cfg(feature = "raw_value")]
+        if request.id() == crate::raw::EXTENSION {
+            tri!(self.parse_whitespace());
+            self.read.begin_raw_buffering();
+            tri!(self.ignore_value());
+            let raw = tri!(self.read.end_raw_buffering(RawFragmentVisitor));
+            return match raw {
+                RawFragment::Borrowed(raw) => {
+                    request.deserialize_payload(de::value::BorrowedStrDeserializer::new(raw))
+                }
+                RawFragment::Owned(raw) => {
+                    request.deserialize_payload(de::value::StringDeserializer::new(raw))
+                }
+            };
+        }
+
+        request.deserialize_fallback(self)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
@@ -1921,6 +1991,323 @@ impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
     }
 }
 
+#[cfg(feature = "raw_value")]
+#[derive(Clone)]
+enum RawFragment<'de> {
+    Borrowed(&'de str),
+    Owned(String),
+}
+
+#[cfg(feature = "raw_value")]
+struct RawValueBuffer<'de> {
+    value: Value,
+    raw: RawFragment<'de>,
+    line: usize,
+    column: usize,
+}
+
+#[cfg(feature = "raw_value")]
+impl<'de> de::Buffer<'de> for RawValueBuffer<'de> {
+    type Error = Error;
+    type OwnedDeserializer = BufferedValueDeserializer<'de>;
+    type RefDeserializer<'a>
+        = BufferedValueDeserializer<'de>
+    where
+        'de: 'a;
+
+    fn owned_deserializer(self) -> Self::OwnedDeserializer {
+        BufferedValueDeserializer {
+            value: self.value,
+            raw: self.raw,
+            line: self.line,
+            column: self.column,
+        }
+    }
+
+    fn ref_deserializer<'a>(&'a self) -> Self::RefDeserializer<'a>
+    where
+        'de: 'a,
+    {
+        BufferedValueDeserializer {
+            value: self.value.clone(),
+            raw: self.raw.clone(),
+            line: self.line,
+            column: self.column,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        self.value.as_str()
+    }
+}
+
+#[cfg(feature = "raw_value")]
+struct BufferedValueDeserializer<'de> {
+    value: Value,
+    raw: RawFragment<'de>,
+    line: usize,
+    column: usize,
+}
+
+#[cfg(feature = "raw_value")]
+fn offset_buffer_result<T>(result: Result<T>, line: usize, column: usize) -> Result<T> {
+    result.map_err(|error| error.offset_position(line, column))
+}
+
+#[cfg(feature = "raw_value")]
+macro_rules! delegate_buffered_value {
+    ($($method:ident)*) => {
+        $(
+            fn $method<V>(self, visitor: V) -> Result<V::Value>
+            where
+                V: de::Visitor<'de>,
+            {
+                let result = match self.raw {
+                    RawFragment::Borrowed(raw) => {
+                        de::Deserializer::$method(&mut Deserializer::from_str(raw), visitor)
+                    }
+                    RawFragment::Owned(_) => de::Deserializer::$method(self.value, visitor),
+                };
+                offset_buffer_result(result, self.line, self.column)
+            }
+        )*
+    };
+}
+
+#[cfg(feature = "raw_value")]
+impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
+    type Error = Error;
+
+    delegate_buffered_value! {
+        deserialize_any deserialize_bool
+        deserialize_i8 deserialize_i16 deserialize_i32 deserialize_i64 deserialize_i128
+        deserialize_u8 deserialize_u16 deserialize_u32 deserialize_u64 deserialize_u128
+        deserialize_f32 deserialize_f64 deserialize_char deserialize_str deserialize_string
+        deserialize_bytes deserialize_byte_buf deserialize_option deserialize_unit
+        deserialize_seq deserialize_map deserialize_identifier deserialize_ignored_any
+    }
+
+    fn deserialize_unit_struct<V>(self, name: &'static str, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        let result = match self.raw {
+            RawFragment::Borrowed(raw) => de::Deserializer::deserialize_unit_struct(
+                &mut Deserializer::from_str(raw),
+                name,
+                visitor,
+            ),
+            RawFragment::Owned(_) => {
+                de::Deserializer::deserialize_unit_struct(self.value, name, visitor)
+            }
+        };
+        offset_buffer_result(result, self.line, self.column)
+    }
+
+    fn deserialize_newtype_struct<V>(self, name: &'static str, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        let result = match self.raw {
+            RawFragment::Borrowed(raw) => de::Deserializer::deserialize_newtype_struct(
+                &mut Deserializer::from_str(raw),
+                name,
+                visitor,
+            ),
+            RawFragment::Owned(_) => {
+                de::Deserializer::deserialize_newtype_struct(self.value, name, visitor)
+            }
+        };
+        offset_buffer_result(result, self.line, self.column)
+    }
+
+    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        let result = match self.raw {
+            RawFragment::Borrowed(raw) => {
+                de::Deserializer::deserialize_tuple(&mut Deserializer::from_str(raw), len, visitor)
+            }
+            RawFragment::Owned(_) => de::Deserializer::deserialize_tuple(self.value, len, visitor),
+        };
+        offset_buffer_result(result, self.line, self.column)
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        name: &'static str,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        let result = match self.raw {
+            RawFragment::Borrowed(raw) => de::Deserializer::deserialize_tuple_struct(
+                &mut Deserializer::from_str(raw),
+                name,
+                len,
+                visitor,
+            ),
+            RawFragment::Owned(_) => {
+                de::Deserializer::deserialize_tuple_struct(self.value, name, len, visitor)
+            }
+        };
+        offset_buffer_result(result, self.line, self.column)
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        let result = match self.raw {
+            RawFragment::Borrowed(raw) => de::Deserializer::deserialize_struct(
+                &mut Deserializer::from_str(raw),
+                name,
+                fields,
+                visitor,
+            ),
+            RawFragment::Owned(_) => {
+                de::Deserializer::deserialize_struct(self.value, name, fields, visitor)
+            }
+        };
+        offset_buffer_result(result, self.line, self.column)
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        let result = match self.raw {
+            RawFragment::Borrowed(raw) => de::Deserializer::deserialize_enum(
+                &mut Deserializer::from_str(raw),
+                name,
+                variants,
+                visitor,
+            ),
+            RawFragment::Owned(_) => {
+                de::Deserializer::deserialize_enum(self.value, name, variants, visitor)
+            }
+        };
+        offset_buffer_result(result, self.line, self.column)
+    }
+
+    fn deserialize_extension<T>(self, request: T) -> Result<T::Value>
+    where
+        T: de::DeserializeExtension<'de, Self::Error>,
+    {
+        if request.id() == crate::raw::EXTENSION {
+            let result = match self.raw {
+                RawFragment::Borrowed(raw) => {
+                    request.deserialize_payload(de::value::BorrowedStrDeserializer::new(raw))
+                }
+                RawFragment::Owned(raw) => {
+                    request.deserialize_payload(de::value::StringDeserializer::new(raw))
+                }
+            };
+            return offset_buffer_result(result, self.line, self.column);
+        }
+
+        let result = match self.raw {
+            RawFragment::Borrowed(raw) => {
+                de::Deserializer::deserialize_extension(&mut Deserializer::from_str(raw), request)
+            }
+            RawFragment::Owned(_) => de::Deserializer::deserialize_extension(self.value, request),
+        };
+        offset_buffer_result(result, self.line, self.column)
+    }
+
+    fn deserialize_buffer(self) -> Result<impl de::Buffer<'de, Error = Self::Error> + use<'de>> {
+        Ok(RawValueBuffer {
+            value: self.value,
+            raw: self.raw,
+            line: self.line,
+            column: self.column,
+        })
+    }
+}
+
+#[cfg(feature = "raw_value")]
+struct RawFragmentVisitor;
+
+#[cfg(feature = "raw_value")]
+impl<'de> de::Visitor<'de> for RawFragmentVisitor {
+    type Value = RawFragment<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a raw JSON value")
+    }
+
+    fn visit_map<A>(self, mut access: A) -> result::Result<Self::Value, A::Error>
+    where
+        A: de::MapAccess<'de>,
+    {
+        if tri!(access.next_key::<de::IgnoredAny>()).is_none() {
+            return Err(de::Error::custom("raw value is missing"));
+        }
+        access.next_value_seed(RawFragmentSeed)
+    }
+}
+
+#[cfg(feature = "raw_value")]
+struct RawFragmentSeed;
+
+#[cfg(feature = "raw_value")]
+impl<'de> de::DeserializeSeed<'de> for RawFragmentSeed {
+    type Value = RawFragment<'de>;
+
+    fn deserialize<D>(self, deserializer: D) -> result::Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(RawFragmentStringVisitor)
+    }
+}
+
+#[cfg(feature = "raw_value")]
+struct RawFragmentStringVisitor;
+
+#[cfg(feature = "raw_value")]
+impl<'de> de::Visitor<'de> for RawFragmentStringVisitor {
+    type Value = RawFragment<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a raw JSON value")
+    }
+
+    fn visit_borrowed_str<E>(self, raw: &'de str) -> result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(RawFragment::Borrowed(raw))
+    }
+
+    fn visit_str<E>(self, raw: &str) -> result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(RawFragment::Owned(raw.to_owned()))
+    }
+
+    fn visit_string<E>(self, raw: String) -> result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(RawFragment::Owned(raw))
+    }
+}
+
 struct SeqAccess<'a, R: 'a> {
     de: &'a mut Deserializer<R>,
     first: bool,
@@ -1929,6 +2316,34 @@ struct SeqAccess<'a, R: 'a> {
 impl<'a, R: 'a> SeqAccess<'a, R> {
     fn new(de: &'a mut Deserializer<R>) -> Self {
         SeqAccess { de, first: true }
+    }
+
+    fn has_next_element<'de>(&mut self) -> Result<bool>
+    where
+        R: Read<'de>,
+    {
+        let peek = match tri!(self.de.parse_whitespace()) {
+            Some(b) => b,
+            None => {
+                return Err(self.de.peek_error(ErrorCode::EofWhileParsingList));
+            }
+        };
+
+        if peek == b']' {
+            Ok(false)
+        } else if self.first {
+            self.first = false;
+            Ok(true)
+        } else if peek == b',' {
+            self.de.eat_char();
+            match tri!(self.de.parse_whitespace()) {
+                Some(b']') => Err(self.de.peek_error(ErrorCode::TrailingComma)),
+                Some(_) => Ok(true),
+                None => Err(self.de.peek_error(ErrorCode::EofWhileParsingValue)),
+            }
+        } else {
+            Err(self.de.peek_error(ErrorCode::ExpectedListCommaOrEnd))
+        }
     }
 }
 
@@ -1939,34 +2354,7 @@ impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
     where
         T: de::DeserializeSeed<'de>,
     {
-        fn has_next_element<'de, 'a, R: Read<'de> + 'a>(
-            seq: &mut SeqAccess<'a, R>,
-        ) -> Result<bool> {
-            let peek = match tri!(seq.de.parse_whitespace()) {
-                Some(b) => b,
-                None => {
-                    return Err(seq.de.peek_error(ErrorCode::EofWhileParsingList));
-                }
-            };
-
-            if peek == b']' {
-                Ok(false)
-            } else if seq.first {
-                seq.first = false;
-                Ok(true)
-            } else if peek == b',' {
-                seq.de.eat_char();
-                match tri!(seq.de.parse_whitespace()) {
-                    Some(b']') => Err(seq.de.peek_error(ErrorCode::TrailingComma)),
-                    Some(_) => Ok(true),
-                    None => Err(seq.de.peek_error(ErrorCode::EofWhileParsingValue)),
-                }
-            } else {
-                Err(seq.de.peek_error(ErrorCode::ExpectedListCommaOrEnd))
-            }
-        }
-
-        if tri!(has_next_element(self)) {
+        if tri!(self.has_next_element()) {
             Ok(Some(tri!(seed.deserialize(&mut *self.de))))
         } else {
             Ok(None)
@@ -1976,7 +2364,11 @@ impl<'de, 'a, R: Read<'de> + 'a> de::SeqAccess<'de> for SeqAccess<'a, R> {
     fn next_element_buffer(
         &mut self,
     ) -> Result<Option<impl de::Buffer<'de, Error = Self::Error> + use<'de, 'a, R>>> {
-        de::SeqAccess::next_element(self).map(|value| value.map(ValueBuffer::new))
+        if tri!(self.has_next_element()) {
+            self.de.capture_buffer().map(Some)
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -2053,7 +2445,8 @@ impl<'de, 'a, R: Read<'de> + 'a> de::MapAccess<'de> for MapAccess<'a, R> {
     fn next_value_buffer(
         &mut self,
     ) -> Result<impl de::Buffer<'de, Error = Self::Error> + use<'de, 'a, R>> {
-        de::MapAccess::next_value(self).map(ValueBuffer::new)
+        tri!(self.de.parse_object_colon());
+        self.de.capture_buffer()
     }
 }
 

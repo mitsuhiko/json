@@ -6,11 +6,11 @@ use core::fmt::{self, Debug, Display};
 use core::mem;
 use serde::de::value::BorrowedStrDeserializer;
 use serde::de::{
-    self, Deserialize, DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, Unexpected,
-    Visitor,
+    self, Deserialize, DeserializeExtension, DeserializeSeed, Deserializer, IntoDeserializer,
+    MapAccess, Unexpected, Visitor,
 };
 use serde::forward_to_deserialize_any;
-use serde::ser::{Serialize, SerializeStruct, Serializer};
+use serde::ser::{Serialize, SerializeExtension, SerializeStruct, Serializer};
 
 /// Reference to a range of bytes encompassing a single valid JSON value in the
 /// input data.
@@ -340,15 +340,38 @@ where
 }
 
 pub const TOKEN: &str = "$serde_json::private::RawValue";
+pub(crate) const EXTENSION: serde::ExtensionId = serde::ExtensionId::new("serde_json/raw_value@1");
 
 impl Serialize for RawValue {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut s = tri!(serializer.serialize_struct(TOKEN, 1));
-        tri!(s.serialize_field(TOKEN, &self.json));
-        s.end()
+        serializer.serialize_extension(&RawValueExtension(&self.json))
+    }
+}
+
+struct RawValueExtension<'a>(&'a str);
+
+impl SerializeExtension for RawValueExtension<'_> {
+    fn id(&self) -> serde::ExtensionId {
+        EXTENSION
+    }
+
+    fn serialize_payload<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.0)
+    }
+
+    fn serialize_fallback<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = tri!(serializer.serialize_struct(TOKEN, 1));
+        tri!(state.serialize_field(TOKEN, self.0));
+        state.end()
     }
 }
 
@@ -378,7 +401,34 @@ impl<'de: 'a, 'a> Deserialize<'de> for &'a RawValue {
             }
         }
 
-        deserializer.deserialize_newtype_struct(TOKEN, ReferenceVisitor)
+        struct Request;
+
+        impl<'de, E> DeserializeExtension<'de, E> for Request
+        where
+            E: de::Error,
+        {
+            type Value = &'de RawValue;
+
+            fn id(&self) -> serde::ExtensionId {
+                EXTENSION
+            }
+
+            fn deserialize_payload<D>(self, deserializer: D) -> Result<Self::Value, E>
+            where
+                D: Deserializer<'de, Error = E>,
+            {
+                deserializer.deserialize_str(ReferenceFromString)
+            }
+
+            fn deserialize_fallback<D>(self, deserializer: D) -> Result<Self::Value, E>
+            where
+                D: Deserializer<'de, Error = E>,
+            {
+                deserializer.deserialize_newtype_struct(TOKEN, ReferenceVisitor)
+            }
+        }
+
+        deserializer.deserialize_extension(Request)
     }
 }
 
@@ -408,7 +458,34 @@ impl<'de> Deserialize<'de> for Box<RawValue> {
             }
         }
 
-        deserializer.deserialize_newtype_struct(TOKEN, BoxedVisitor)
+        struct Request;
+
+        impl<'de, E> DeserializeExtension<'de, E> for Request
+        where
+            E: de::Error,
+        {
+            type Value = Box<RawValue>;
+
+            fn id(&self) -> serde::ExtensionId {
+                EXTENSION
+            }
+
+            fn deserialize_payload<D>(self, deserializer: D) -> Result<Self::Value, E>
+            where
+                D: Deserializer<'de, Error = E>,
+            {
+                deserializer.deserialize_str(BoxedFromString)
+            }
+
+            fn deserialize_fallback<D>(self, deserializer: D) -> Result<Self::Value, E>
+            where
+                D: Deserializer<'de, Error = E>,
+            {
+                deserializer.deserialize_newtype_struct(TOKEN, BoxedVisitor)
+            }
+        }
+
+        deserializer.deserialize_extension(Request)
     }
 }
 

@@ -333,6 +333,25 @@ impl Error {
         }
     }
 
+    #[cfg(feature = "raw_value")]
+    #[cold]
+    pub(crate) fn offset_position(mut self, line: usize, column: usize) -> Self {
+        if matches!(self.err.code, ErrorCode::Io(_)) {
+            return self;
+        }
+
+        if self.err.line == 0 {
+            self.err.line = line;
+            self.err.column = column;
+        } else {
+            if self.err.line == 1 {
+                self.err.column += column.saturating_sub(1);
+            }
+            self.err.line += line.saturating_sub(1);
+        }
+        self
+    }
+
     #[cold]
     pub(crate) fn fix_position<F>(self, f: F) -> Self
     where
