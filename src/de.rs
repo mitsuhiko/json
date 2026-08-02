@@ -2066,7 +2066,19 @@ macro_rules! delegate_buffered_value {
                     RawFragment::Borrowed(raw) => {
                         de::Deserializer::$method(&mut Deserializer::from_str(raw), visitor)
                     }
-                    RawFragment::Owned(_) => de::Deserializer::$method(self.value, visitor),
+                    RawFragment::Owned(_raw) => {
+                        #[cfg(feature = "std")]
+                        {
+                            de::Deserializer::$method(
+                                &mut Deserializer::from_reader(_raw.as_bytes()),
+                                visitor,
+                            )
+                        }
+                        #[cfg(not(feature = "std"))]
+                        {
+                            de::Deserializer::$method(self.value, visitor)
+                        }
+                    }
                 };
                 offset_buffer_result(result, self.line, self.column)
             }
@@ -2097,8 +2109,19 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
                 name,
                 visitor,
             ),
-            RawFragment::Owned(_) => {
-                de::Deserializer::deserialize_unit_struct(self.value, name, visitor)
+            RawFragment::Owned(_raw) => {
+                #[cfg(feature = "std")]
+                {
+                    de::Deserializer::deserialize_unit_struct(
+                        &mut Deserializer::from_reader(_raw.as_bytes()),
+                        name,
+                        visitor,
+                    )
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    de::Deserializer::deserialize_unit_struct(self.value, name, visitor)
+                }
             }
         };
         offset_buffer_result(result, self.line, self.column)
@@ -2114,8 +2137,19 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
                 name,
                 visitor,
             ),
-            RawFragment::Owned(_) => {
-                de::Deserializer::deserialize_newtype_struct(self.value, name, visitor)
+            RawFragment::Owned(_raw) => {
+                #[cfg(feature = "std")]
+                {
+                    de::Deserializer::deserialize_newtype_struct(
+                        &mut Deserializer::from_reader(_raw.as_bytes()),
+                        name,
+                        visitor,
+                    )
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    de::Deserializer::deserialize_newtype_struct(self.value, name, visitor)
+                }
             }
         };
         offset_buffer_result(result, self.line, self.column)
@@ -2129,7 +2163,20 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
             RawFragment::Borrowed(raw) => {
                 de::Deserializer::deserialize_tuple(&mut Deserializer::from_str(raw), len, visitor)
             }
-            RawFragment::Owned(_) => de::Deserializer::deserialize_tuple(self.value, len, visitor),
+            RawFragment::Owned(_raw) => {
+                #[cfg(feature = "std")]
+                {
+                    de::Deserializer::deserialize_tuple(
+                        &mut Deserializer::from_reader(_raw.as_bytes()),
+                        len,
+                        visitor,
+                    )
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    de::Deserializer::deserialize_tuple(self.value, len, visitor)
+                }
+            }
         };
         offset_buffer_result(result, self.line, self.column)
     }
@@ -2150,8 +2197,20 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
                 len,
                 visitor,
             ),
-            RawFragment::Owned(_) => {
-                de::Deserializer::deserialize_tuple_struct(self.value, name, len, visitor)
+            RawFragment::Owned(_raw) => {
+                #[cfg(feature = "std")]
+                {
+                    de::Deserializer::deserialize_tuple_struct(
+                        &mut Deserializer::from_reader(_raw.as_bytes()),
+                        name,
+                        len,
+                        visitor,
+                    )
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    de::Deserializer::deserialize_tuple_struct(self.value, name, len, visitor)
+                }
             }
         };
         offset_buffer_result(result, self.line, self.column)
@@ -2173,8 +2232,20 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
                 fields,
                 visitor,
             ),
-            RawFragment::Owned(_) => {
-                de::Deserializer::deserialize_struct(self.value, name, fields, visitor)
+            RawFragment::Owned(_raw) => {
+                #[cfg(feature = "std")]
+                {
+                    de::Deserializer::deserialize_struct(
+                        &mut Deserializer::from_reader(_raw.as_bytes()),
+                        name,
+                        fields,
+                        visitor,
+                    )
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    de::Deserializer::deserialize_struct(self.value, name, fields, visitor)
+                }
             }
         };
         offset_buffer_result(result, self.line, self.column)
@@ -2196,8 +2267,20 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
                 variants,
                 visitor,
             ),
-            RawFragment::Owned(_) => {
-                de::Deserializer::deserialize_enum(self.value, name, variants, visitor)
+            RawFragment::Owned(_raw) => {
+                #[cfg(feature = "std")]
+                {
+                    de::Deserializer::deserialize_enum(
+                        &mut Deserializer::from_reader(_raw.as_bytes()),
+                        name,
+                        variants,
+                        visitor,
+                    )
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    de::Deserializer::deserialize_enum(self.value, name, variants, visitor)
+                }
             }
         };
         offset_buffer_result(result, self.line, self.column)
@@ -2212,8 +2295,8 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
                 RawFragment::Borrowed(raw) => {
                     request.deserialize_payload(de::value::BorrowedStrDeserializer::new(raw))
                 }
-                RawFragment::Owned(raw) => {
-                    request.deserialize_payload(de::value::StringDeserializer::new(raw))
+                RawFragment::Owned(_raw) => {
+                    request.deserialize_payload(de::value::StringDeserializer::new(_raw))
                 }
             };
             return offset_buffer_result(result, self.line, self.column);
@@ -2223,7 +2306,19 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
             RawFragment::Borrowed(raw) => {
                 de::Deserializer::deserialize_extension(&mut Deserializer::from_str(raw), request)
             }
-            RawFragment::Owned(_) => de::Deserializer::deserialize_extension(self.value, request),
+            RawFragment::Owned(_raw) => {
+                #[cfg(feature = "std")]
+                {
+                    de::Deserializer::deserialize_extension(
+                        &mut Deserializer::from_reader(_raw.as_bytes()),
+                        request,
+                    )
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    de::Deserializer::deserialize_extension(self.value, request)
+                }
+            }
         };
         offset_buffer_result(result, self.line, self.column)
     }

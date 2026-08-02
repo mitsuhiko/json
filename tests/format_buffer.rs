@@ -87,6 +87,26 @@ fn borrowed_raw_value_inside_nested_untagged_enum() {
 
 #[cfg(feature = "raw_value")]
 #[test]
+fn owned_raw_value_inside_nested_untagged_enum() {
+    use serde_json::value::RawValue;
+
+    #[derive(Debug, Deserialize)]
+    struct Pair(u8, Box<RawValue>);
+
+    #[derive(Debug, Deserialize)]
+    #[serde(untagged)]
+    enum Enum {
+        Pair(Pair),
+    }
+
+    let json = br#"[1, { "key": [1, 2] }]"#;
+    let Enum::Pair(Pair(number, raw)) = serde_json::from_reader::<_, Enum>(&json[..]).unwrap();
+    assert_eq!(number, 1);
+    assert_eq!(raw.get(), r#"{ "key": [1, 2] }"#);
+}
+
+#[cfg(feature = "raw_value")]
+#[test]
 fn replay_errors_retain_source_position() {
     #[derive(Debug, Deserialize)]
     #[serde(tag = "type")]
