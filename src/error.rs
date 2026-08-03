@@ -333,7 +333,6 @@ impl Error {
         }
     }
 
-    #[cfg(feature = "raw_value")]
     #[cold]
     pub(crate) fn offset_position(mut self, line: usize, column: usize) -> Self {
         if matches!(self.err.code, ErrorCode::Io(_)) {

@@ -51,15 +51,15 @@ impl<'de> Buffer<'de> for ValueBuffer {
     }
 }
 
-pub(crate) struct KeyBuffer(String);
+pub(crate) struct KeyBuffer<'de>(Cow<'de, str>);
 
-impl KeyBuffer {
-    pub(crate) fn new(key: String) -> Self {
-        KeyBuffer(key)
+impl<'de> KeyBuffer<'de> {
+    pub(crate) fn new(key: impl Into<Cow<'de, str>>) -> Self {
+        KeyBuffer(key.into())
     }
 }
 
-impl<'de> Buffer<'de> for KeyBuffer {
+impl<'de> Buffer<'de> for KeyBuffer<'de> {
     type Error = Error;
     type OwnedDeserializer = MapKeyDeserializer<'de>;
     type RefDeserializer<'a>
@@ -68,9 +68,7 @@ impl<'de> Buffer<'de> for KeyBuffer {
         'de: 'a;
 
     fn owned_deserializer(self) -> Self::OwnedDeserializer {
-        MapKeyDeserializer {
-            key: Cow::Owned(self.0),
-        }
+        MapKeyDeserializer { key: self.0 }
     }
 
     fn ref_deserializer<'a>(&'a self) -> Self::RefDeserializer<'a>
@@ -78,7 +76,7 @@ impl<'de> Buffer<'de> for KeyBuffer {
         'de: 'a,
     {
         MapKeyDeserializer {
-            key: Cow::Owned(self.0.clone()),
+            key: self.0.clone(),
         }
     }
 

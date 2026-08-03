@@ -16,7 +16,6 @@ use crate::raw::BorrowedRawDeserializer;
 use crate::raw::OwnedRawDeserializer;
 #[cfg(all(feature = "raw_value", feature = "std"))]
 use alloc::string::String;
-#[cfg(feature = "raw_value")]
 use serde::de::Visitor;
 
 /// Trait used by the deserializer for iterating over input. This is manually
@@ -83,17 +82,42 @@ pub trait Read<'de>: private::Sealed {
     #[doc(hidden)]
     fn ignore_str(&mut self) -> Result<()>;
 
+    /// Like `ignore_str`, but permits bytes accepted by `deserialize_bytes`
+    /// even when they are not valid JSON Unicode strings.
+    #[doc(hidden)]
+    fn ignore_str_raw(&mut self) -> Result<()> {
+        loop {
+            match tri!(next_or_eof(self)) {
+                b'"' => return Ok(()),
+                b'\\' => tri!(ignore_escape(self)),
+                _ => {}
+            }
+        }
+    }
+
     /// Assumes the previous byte was a hex escape sequence ('\u') in a string.
     /// Parses next hexadecimal sequence.
     #[doc(hidden)]
     fn decode_hex_escape(&mut self) -> Result<u16>;
+
+    /// Start retaining bytes consumed from the input.
+    #[doc(hidden)]
+    fn begin_buffering(&mut self);
+
+    /// Stop retaining bytes and provide them to the visitor.
+    #[doc(hidden)]
+    fn end_buffering<V>(&mut self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>;
 
     /// Switch raw buffering mode on.
     ///
     /// This is used when deserializing `RawValue`.
     #[cfg(feature = "raw_value")]
     #[doc(hidden)]
-    fn begin_raw_buffering(&mut self);
+    fn begin_raw_buffering(&mut self) {
+        self.begin_buffering();
+    }
 
     /// Switch raw buffering mode off and provides the raw buffered data to the
     /// given visitor.
@@ -153,7 +177,6 @@ where
     iter: LineColIterator<io::Bytes<R>>,
     /// Temporary storage of peeked byte.
     ch: Option<u8>,
-    #[cfg(feature = "raw_value")]
     raw_buffer: Option<Vec<u8>>,
 }
 
@@ -165,7 +188,6 @@ pub struct SliceRead<'a> {
     slice: &'a [u8],
     /// Index of the *next* byte that will be returned by next() or peek().
     index: usize,
-    #[cfg(feature = "raw_value")]
     raw_buffering_start_index: usize,
 }
 
@@ -201,7 +223,6 @@ where
         IoRead {
             iter: LineColIterator::new(reader.bytes()),
             ch: None,
-            #[cfg(feature = "raw_value")]
             raw_buffer: None,
         }
     }
@@ -258,22 +279,16 @@ where
     fn next(&mut self) -> Result<Option<u8>> {
         match self.ch.take() {
             Some(ch) => {
-                #[cfg(feature = "raw_value")]
-                {
-                    if let Some(buf) = &mut self.raw_buffer {
-                        buf.push(ch);
-                    }
+                if let Some(buf) = &mut self.raw_buffer {
+                    buf.push(ch);
                 }
                 Ok(Some(ch))
             }
             None => match self.iter.next() {
                 Some(Err(err)) => Err(Error::io(err)),
                 Some(Ok(ch)) => {
-                    #[cfg(feature = "raw_value")]
-                    {
-                        if let Some(buf) = &mut self.raw_buffer {
-                            buf.push(ch);
-                        }
+                    if let Some(buf) = &mut self.raw_buffer {
+                        buf.push(ch);
                     }
                     Ok(Some(ch))
                 }
@@ -297,13 +312,6 @@ where
         }
     }
 
-    #[cfg(not(feature = "raw_value"))]
-    #[inline]
-    fn discard(&mut self) {
-        self.ch = None;
-    }
-
-    #[cfg(feature = "raw_value")]
     fn discard(&mut self) {
         if let Some(ch) = self.ch.take() {
             if let Some(buf) = &mut self.raw_buffer {
@@ -376,9 +384,15 @@ where
         }
     }
 
-    #[cfg(feature = "raw_value")]
-    fn begin_raw_buffering(&mut self) {
+    fn begin_buffering(&mut self) {
         self.raw_buffer = Some(Vec::new());
+    }
+
+    fn end_buffering<V>(&mut self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_byte_buf(self.raw_buffer.take().unwrap())
     }
 
     #[cfg(feature = "raw_value")]
@@ -413,7 +427,6 @@ impl<'a> SliceRead<'a> {
         SliceRead {
             slice,
             index: 0,
-            #[cfg(feature = "raw_value")]
             raw_buffering_start_index: 0,
         }
     }
@@ -634,9 +647,16 @@ impl<'a> Read<'a> for SliceRead<'a> {
         }
     }
 
-    #[cfg(feature = "raw_value")]
-    fn begin_raw_buffering(&mut self) {
+    fn begin_buffering(&mut self) {
         self.raw_buffering_start_index = self.index;
+    }
+
+    fn end_buffering<V>(&mut self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'a>,
+    {
+        let raw = &self.slice[self.raw_buffering_start_index..self.index];
+        visitor.visit_borrowed_bytes(raw)
     }
 
     #[cfg(feature = "raw_value")]
@@ -730,9 +750,15 @@ impl<'a> Read<'a> for StrRead<'a> {
         self.delegate.decode_hex_escape()
     }
 
-    #[cfg(feature = "raw_value")]
-    fn begin_raw_buffering(&mut self) {
-        self.delegate.begin_raw_buffering();
+    fn begin_buffering(&mut self) {
+        self.delegate.begin_buffering();
+    }
+
+    fn end_buffering<V>(&mut self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'a>,
+    {
+        self.delegate.end_buffering(visitor)
     }
 
     #[cfg(feature = "raw_value")]
@@ -802,13 +828,23 @@ where
         R::ignore_str(self)
     }
 
+    fn ignore_str_raw(&mut self) -> Result<()> {
+        R::ignore_str_raw(self)
+    }
+
     fn decode_hex_escape(&mut self) -> Result<u16> {
         R::decode_hex_escape(self)
     }
 
-    #[cfg(feature = "raw_value")]
-    fn begin_raw_buffering(&mut self) {
-        R::begin_raw_buffering(self);
+    fn begin_buffering(&mut self) {
+        R::begin_buffering(self);
+    }
+
+    fn end_buffering<V>(&mut self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        R::end_buffering(self, visitor)
     }
 
     #[cfg(feature = "raw_value")]

@@ -1,6 +1,11 @@
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
+// https://github.com/serde-rs/json/issues/496
+// https://github.com/serde-rs/json/issues/560
+// https://github.com/serde-rs/json/issues/1254
+// https://github.com/serde-rs/serde/issues/2169
+// https://github.com/serde-rs/serde/issues/2902
 #[test]
 fn internally_tagged_map_with_integer_keys() {
     #[derive(Debug, PartialEq, Deserialize)]
@@ -15,6 +20,8 @@ fn internally_tagged_map_with_integer_keys() {
     );
 }
 
+// https://github.com/serde-rs/serde/issues/1638
+// https://github.com/serde-rs/serde/issues/2117
 #[test]
 fn flattened_map_with_integer_keys() {
     #[derive(Debug, PartialEq, Deserialize)]
@@ -33,22 +40,159 @@ fn flattened_map_with_integer_keys() {
     );
 }
 
-#[cfg(feature = "arbitrary_precision")]
+// https://github.com/serde-rs/json/issues/989
+// https://github.com/serde-rs/serde/issues/2628
 #[test]
-fn untagged_u128_with_arbitrary_precision() {
+fn flattened_struct_containing_integer_keyed_map() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct Outer {
+        #[serde(flatten)]
+        inner: Inner,
+    }
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct Inner {
+        map: BTreeMap<u32, String>,
+    }
+
+    assert_eq!(
+        serde_json::from_str::<Outer>(r#"{"map":{"1":"a","2":"b"}}"#).unwrap(),
+        Outer {
+            inner: Inner {
+                map: BTreeMap::from([(1, "a".to_owned()), (2, "b".to_owned())]),
+            },
+        },
+    );
+}
+
+// https://github.com/serde-rs/json/issues/1103
+// https://github.com/serde-rs/json/issues/1261
+// https://github.com/serde-rs/serde/issues/2672
+// https://github.com/serde-rs/serde/issues/2724
+#[test]
+fn untagged_struct_containing_integer_keyed_map() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(untagged)]
+    enum Enum {
+        Map { data: BTreeMap<u32, String> },
+    }
+
+    assert_eq!(
+        serde_json::from_str::<Enum>(r#"{"data":{"1":"test"}}"#).unwrap(),
+        Enum::Map {
+            data: BTreeMap::from([(1, "test".to_owned())]),
+        },
+    );
+}
+
+// https://github.com/serde-rs/json/issues/740
+// https://github.com/serde-rs/json/issues/1155
+// https://github.com/serde-rs/json/issues/1277
+// https://github.com/serde-rs/serde/issues/1682
+// https://github.com/serde-rs/serde/issues/1717
+#[test]
+fn untagged_u128() {
     #[derive(Debug, PartialEq, Deserialize)]
     #[serde(untagged)]
     enum Enum {
         Integer(u128),
     }
 
+    let json = b"340282366920938463463374607431768211455";
     assert_eq!(
-        serde_json::from_str::<Enum>("340282366920938463463374607431768211455").unwrap(),
+        serde_json::from_slice::<Enum>(json).unwrap(),
+        Enum::Integer(u128::MAX),
+    );
+    assert_eq!(
+        serde_json::from_reader::<_, Enum>(&json[..]).unwrap(),
         Enum::Integer(u128::MAX),
     );
 }
 
+// https://github.com/serde-rs/serde/issues/2055
+#[test]
+fn json_sequence_is_not_reinterpreted_as_enum_variant_index() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(untagged)]
+    enum Outer {
+        Tagged(Tagged),
+        Integers(Vec<i64>),
+    }
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(tag = "type")]
+    enum Tagged {
+        Unit,
+        Integer(i64),
+    }
+
+    assert_eq!(
+        serde_json::from_str::<Outer>("[1,2]").unwrap(),
+        Outer::Integers(vec![1, 2]),
+    );
+}
+
+// https://github.com/serde-rs/serde/issues/2917
+#[test]
+#[allow(dead_code)]
+fn partially_untagged_enum_rejects_json_sequence_variant_index() {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "type")]
+    enum Outer {
+        Title,
+        #[serde(untagged)]
+        Other(String),
+    }
+
+    assert!(serde_json::from_str::<Outer>("[0]").is_err());
+}
+
+// https://github.com/serde-rs/serde/issues/2098
+#[test]
+#[allow(dead_code)]
+fn flattened_enum_rejects_json_numeric_tag() {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "color")]
+    enum Color {
+        Red,
+        Green,
+        Blue,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Pixel {
+        #[serde(flatten)]
+        color: Color,
+    }
+
+    assert!(serde_json::from_str::<Pixel>(r#"{"color":0}"#).is_err());
+}
+
+// https://github.com/serde-rs/json/issues/625
+#[test]
+fn flattened_u128() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct Outer {
+        #[serde(flatten)]
+        inner: Inner,
+    }
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct Inner {
+        value: u128,
+    }
+
+    assert_eq!(
+        serde_json::from_str::<Outer>(r#"{"value":340282366920938463463374607431768211455}"#,)
+            .unwrap(),
+        Outer {
+            inner: Inner { value: u128::MAX },
+        },
+    );
+}
+
 // https://github.com/serde-rs/serde/issues/1998
+// https://github.com/serde-rs/json/issues/559
 #[cfg(feature = "arbitrary_precision")]
 #[test]
 fn issue_1998_untagged_integer_with_arbitrary_precision() {
@@ -65,6 +209,8 @@ fn issue_1998_untagged_integer_with_arbitrary_precision() {
 }
 
 // https://github.com/serde-rs/serde/issues/2623
+// https://github.com/serde-rs/json/issues/505
+// https://github.com/serde-rs/json/issues/1108
 #[cfg(feature = "arbitrary_precision")]
 #[test]
 fn issue_2623_internally_tagged_float_with_arbitrary_precision() {
@@ -86,6 +232,8 @@ fn issue_2623_internally_tagged_float_with_arbitrary_precision() {
 }
 
 // https://github.com/serde-rs/serde/issues/2661
+// https://github.com/serde-rs/json/issues/1108
+// https://github.com/serde-rs/json/issues/1278
 #[cfg(feature = "arbitrary_precision")]
 #[test]
 fn issue_2661_untagged_float_with_arbitrary_precision() {
@@ -102,6 +250,8 @@ fn issue_2661_untagged_float_with_arbitrary_precision() {
 }
 
 // https://github.com/serde-rs/serde/issues/2748
+// https://github.com/serde-rs/json/issues/721
+// https://github.com/serde-rs/json/issues/1157
 #[cfg(feature = "arbitrary_precision")]
 #[test]
 fn issue_2748_flattened_float_with_arbitrary_precision() {
@@ -125,6 +275,8 @@ fn issue_2748_flattened_float_with_arbitrary_precision() {
 }
 
 // https://github.com/serde-rs/serde/issues/2903
+// https://github.com/serde-rs/json/issues/959
+// https://github.com/serde-rs/json/issues/1046
 #[cfg(feature = "arbitrary_precision")]
 #[test]
 fn issue_2903_adjacently_tagged_trailing_zero_float() {
@@ -147,6 +299,27 @@ fn issue_2903_adjacently_tagged_trailing_zero_float() {
     );
 }
 
+// https://github.com/serde-rs/json/issues/664
+#[test]
+fn empty_tuple_variant_inside_untagged_enum() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(untagged)]
+    enum Outer {
+        Inner(Inner),
+    }
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    enum Inner {
+        Empty(),
+    }
+
+    assert_eq!(
+        serde_json::from_str::<Outer>(r#"{"Empty":[]}"#).unwrap(),
+        Outer::Inner(Inner::Empty()),
+    );
+}
+
+// https://github.com/serde-rs/json/issues/497
 #[cfg(feature = "raw_value")]
 #[test]
 fn raw_value_inside_untagged_enum() {
@@ -162,7 +335,72 @@ fn raw_value_inside_untagged_enum() {
     assert_eq!(raw.get(), r#"{"key": [1, 2]}"#);
 }
 
+// https://github.com/serde-rs/json/issues/545
+// https://github.com/serde-rs/json/issues/779
+#[cfg(feature = "raw_value")]
+#[test]
+fn raw_value_inside_internally_tagged_enum() {
+    use serde_json::value::RawValue;
+
+    #[derive(Debug, Deserialize)]
+    struct Data<'a> {
+        #[serde(borrow)]
+        value: &'a RawValue,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "type")]
+    enum Borrowed<'a> {
+        Request {
+            #[serde(borrow)]
+            data: Data<'a>,
+        },
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "type")]
+    enum Owned {
+        Request { payload: Box<RawValue> },
+    }
+
+    let json = r#"{"type":"Request","data":{"value": {"preserved": true}}}"#;
+    let Borrowed::Request {
+        data: Data { value },
+    } = serde_json::from_str::<Borrowed<'_>>(json).unwrap();
+    assert_eq!(value.get(), r#"{"preserved": true}"#);
+    assert!(value.get().as_ptr() >= json.as_ptr());
+    assert!(value.get().as_ptr() < json[json.len()..].as_ptr());
+
+    let json = r#"{"type":"Request","payload": {"preserved": true}}"#;
+    let Owned::Request { payload } = serde_json::from_reader::<_, Owned>(json.as_bytes()).unwrap();
+    assert_eq!(payload.get(), r#"{"preserved": true}"#);
+}
+
+// https://github.com/serde-rs/json/issues/599
+// https://github.com/serde-rs/json/issues/1335
+#[cfg(feature = "raw_value")]
+#[test]
+fn raw_values_in_flattened_map() {
+    use serde_json::value::RawValue;
+
+    #[derive(Debug, Deserialize)]
+    struct Struct<'a> {
+        known: u32,
+        #[serde(flatten, borrow)]
+        extra: BTreeMap<&'a str, &'a RawValue>,
+    }
+
+    let json = r#"{"known":1,"raw": {"preserved": true}}"#;
+    let value = serde_json::from_str::<Struct<'_>>(json).unwrap();
+    assert_eq!(value.known, 1);
+    assert_eq!(value.extra["raw"].get(), r#"{"preserved": true}"#);
+    assert!(value.extra["raw"].get().as_ptr() >= json.as_ptr());
+    assert!(value.extra["raw"].get().as_ptr() < json[json.len()..].as_ptr());
+}
+
 // https://github.com/serde-rs/serde/issues/2213
+// https://github.com/serde-rs/json/issues/883
+// https://github.com/serde-rs/json/issues/1099
 #[cfg(feature = "raw_value")]
 #[test]
 fn issue_2213_raw_value_inside_flattened_struct() {
@@ -265,9 +503,46 @@ fn owned_raw_value_inside_nested_untagged_enum() {
     assert_eq!(raw.get(), r#"{ "key": [1, 2] }"#);
 }
 
-#[cfg(feature = "raw_value")]
+// https://github.com/serde-rs/json/issues/855
+// https://github.com/serde-rs/serde/issues/1742
 #[test]
-fn replay_errors_retain_source_position() {
+fn invalid_utf8_bytes_inside_flattened_struct() {
+    #[derive(Debug, Deserialize)]
+    struct Outer {
+        #[serde(flatten)]
+        inner: Inner,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Inner {
+        bytes: serde_bytes::ByteBuf,
+    }
+
+    let json = b"{\"bytes\":\"\xe5\0\xe5\"}";
+    let value = serde_json::from_slice::<Outer>(json).unwrap();
+    assert_eq!(value.inner.bytes.as_ref(), b"\xe5\0\xe5");
+    let value = serde_json::from_reader::<_, Outer>(&json[..]).unwrap();
+    assert_eq!(value.inner.bytes.as_ref(), b"\xe5\0\xe5");
+}
+
+// https://github.com/serde-rs/json/issues/1089
+#[test]
+fn lone_surrogate_bytes_inside_internally_tagged_enum() {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "type")]
+    enum Enum {
+        Bytes { bytes: serde_bytes::ByteBuf },
+    }
+
+    let Enum::Bytes { bytes } =
+        serde_json::from_str::<Enum>(r#"{"type":"Bytes","bytes":"\ud800"}"#).unwrap();
+    assert_eq!(bytes.as_ref(), b"\xed\xa0\x80");
+}
+
+// https://github.com/serde-rs/json/issues/565
+// https://github.com/serde-rs/serde/issues/1621
+#[test]
+fn internally_tagged_error_retains_source_position() {
     #[derive(Debug, Deserialize)]
     #[serde(tag = "type")]
     enum Enum {
@@ -280,6 +555,28 @@ fn replay_errors_retain_source_position() {
     let json = "{\n  \"type\": \"Struct\",\n  \"value\": \"bad\"\n}";
     let error = serde_json::from_str::<Enum>(json).unwrap_err();
     assert_eq!((error.line(), error.column()), (3, 16));
+}
+
+// https://github.com/serde-rs/json/issues/622
+// https://github.com/serde-rs/serde/issues/2035
+#[test]
+#[allow(dead_code)]
+fn flattened_error_retains_source_position() {
+    #[derive(Debug, Deserialize)]
+    struct Outer {
+        known: String,
+        #[serde(flatten)]
+        inner: Inner,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Inner {
+        value: bool,
+    }
+
+    let json = "{\n  \"known\": \"ok\",\n  \"value\": 1\n}";
+    let error = serde_json::from_str::<Outer>(json).unwrap_err();
+    assert_eq!((error.line(), error.column()), (3, 12));
 }
 
 #[cfg(any(feature = "arbitrary_precision", feature = "raw_value"))]
