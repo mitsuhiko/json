@@ -830,7 +830,7 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         let fraction_digits = -exponent as usize;
         self.scratch.clear();
         if let Some(zeros) = fraction_digits.checked_sub(significand.len() + 1) {
-            self.scratch.extend(iter::repeat(b'0').take(zeros + 1));
+            self.scratch.extend(iter::repeat_n(b'0', zeros + 1));
         }
         self.scratch.extend_from_slice(significand.as_bytes());
         let integer_end = self.scratch.len() - fraction_digits;
@@ -2202,16 +2202,17 @@ impl<'de> de::Deserializer<'de> for BufferedValueDeserializer<'de> {
             RawFragment::Borrowed(raw) => {
                 de::Deserializer::deserialize_extension(&mut Deserializer::from_slice(raw), request)
             }
-            RawFragment::Owned(_raw) => {
+            RawFragment::Owned(raw) => {
                 #[cfg(feature = "std")]
                 {
                     de::Deserializer::deserialize_extension(
-                        &mut Deserializer::from_reader(_raw.as_slice()),
+                        &mut Deserializer::from_reader(raw.as_slice()),
                         request,
                     )
                 }
                 #[cfg(not(feature = "std"))]
                 {
+                    let _ = raw;
                     unreachable!("owned JSON buffers require std")
                 }
             }

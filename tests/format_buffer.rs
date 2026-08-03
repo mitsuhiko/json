@@ -11,12 +11,12 @@ fn internally_tagged_map_with_integer_keys() {
     #[derive(Debug, PartialEq, Deserialize)]
     #[serde(tag = "type")]
     enum Enum {
-        Map(BTreeMap<u32, ()>),
+        Map(BTreeMap<u32, bool>),
     }
 
     assert_eq!(
-        serde_json::from_str::<Enum>(r#"{"type":"Map","1":null}"#).unwrap(),
-        Enum::Map(BTreeMap::from([(1, ())])),
+        serde_json::from_str::<Enum>(r#"{"type":"Map","1":true}"#).unwrap(),
+        Enum::Map(BTreeMap::from([(1, true)])),
     );
 }
 

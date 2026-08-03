@@ -238,6 +238,7 @@ impl Display for Value {
             }
         }
 
+        #[allow(clippy::io_other_error)]
         fn io_error(_: fmt::Error) -> io::Error {
             // Error value does not matter because Display impl just maps it
             // back to fmt::Error.
