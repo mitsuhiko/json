@@ -48,6 +48,105 @@ fn untagged_u128_with_arbitrary_precision() {
     );
 }
 
+// https://github.com/serde-rs/serde/issues/1998
+#[cfg(feature = "arbitrary_precision")]
+#[test]
+fn issue_1998_untagged_integer_with_arbitrary_precision() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(untagged)]
+    enum Enum {
+        Integer(i32),
+    }
+
+    assert_eq!(
+        serde_json::from_str::<Enum>("10").unwrap(),
+        Enum::Integer(10),
+    );
+}
+
+// https://github.com/serde-rs/serde/issues/2623
+#[cfg(feature = "arbitrary_precision")]
+#[test]
+fn issue_2623_internally_tagged_float_with_arbitrary_precision() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(tag = "name", rename_all = "lowercase")]
+    enum Fruit {
+        Apple(Apple),
+    }
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct Apple {
+        size: f64,
+    }
+
+    assert_eq!(
+        serde_json::from_str::<Fruit>(r#"{"name":"apple","size":1.23}"#).unwrap(),
+        Fruit::Apple(Apple { size: 1.23 }),
+    );
+}
+
+// https://github.com/serde-rs/serde/issues/2661
+#[cfg(feature = "arbitrary_precision")]
+#[test]
+fn issue_2661_untagged_float_with_arbitrary_precision() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(untagged)]
+    enum Enum {
+        Float(f64),
+    }
+
+    assert_eq!(
+        serde_json::from_str::<Enum>("123.45").unwrap(),
+        Enum::Float(123.45),
+    );
+}
+
+// https://github.com/serde-rs/serde/issues/2748
+#[cfg(feature = "arbitrary_precision")]
+#[test]
+fn issue_2748_flattened_float_with_arbitrary_precision() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct Outer {
+        #[serde(flatten)]
+        inner: Inner,
+    }
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct Inner {
+        value: f64,
+    }
+
+    assert_eq!(
+        serde_json::from_str::<Outer>(r#"{"value":1.0}"#).unwrap(),
+        Outer {
+            inner: Inner { value: 1.0 },
+        },
+    );
+}
+
+// https://github.com/serde-rs/serde/issues/2903
+#[cfg(feature = "arbitrary_precision")]
+#[test]
+fn issue_2903_adjacently_tagged_trailing_zero_float() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(tag = "type", content = "data")]
+    enum Data {
+        #[serde(alias = "a")]
+        A(Info),
+    }
+
+    #[derive(Debug, PartialEq, Deserialize)]
+    struct Info {
+        timestamp: f64,
+    }
+
+    let value = serde_json::from_str(r#"{"type":"a","data":{"timestamp":1.10}}"#).unwrap();
+    assert_eq!(
+        serde_json::from_value::<Data>(value).unwrap(),
+        Data::A(Info { timestamp: 1.1 }),
+    );
+}
+
 #[cfg(feature = "raw_value")]
 #[test]
 fn raw_value_inside_untagged_enum() {
@@ -61,6 +160,67 @@ fn raw_value_inside_untagged_enum() {
 
     let Enum::Raw(raw) = serde_json::from_str::<Enum>(r#"{"key": [1, 2]}"#).unwrap();
     assert_eq!(raw.get(), r#"{"key": [1, 2]}"#);
+}
+
+// https://github.com/serde-rs/serde/issues/2213
+#[cfg(feature = "raw_value")]
+#[test]
+fn issue_2213_raw_value_inside_flattened_struct() {
+    use serde_json::value::RawValue;
+
+    #[derive(Debug, Deserialize)]
+    struct Outer {
+        #[serde(flatten)]
+        inner: Inner,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Inner {
+        raw: Box<RawValue>,
+    }
+
+    let outer = serde_json::from_str::<Outer>(r#"{"raw":{}}"#).unwrap();
+    assert_eq!(outer.inner.raw.get(), "{}");
+}
+
+// https://github.com/serde-rs/serde/issues/1911
+#[cfg(feature = "raw_value")]
+#[test]
+#[allow(dead_code)]
+fn issue_1911_borrowed_raw_value_in_multiple_untagged_variants() {
+    use serde_json::value::RawValue;
+
+    #[derive(Debug, Deserialize)]
+    struct A<'a> {
+        id: &'a str,
+        #[serde(borrow)]
+        a: &'a RawValue,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct B<'a> {
+        id: &'a str,
+        #[serde(borrow)]
+        b: &'a RawValue,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(untagged)]
+    enum Enum<'a> {
+        #[serde(borrow)]
+        A(A<'a>),
+        #[serde(borrow)]
+        B(B<'a>),
+    }
+
+    let json = r#"{"id":"second","b":{"preserved": true}}"#;
+    let Enum::B(B { id, b }) = serde_json::from_str::<Enum<'_>>(json).unwrap() else {
+        panic!("expected second untagged variant");
+    };
+    assert_eq!(id, "second");
+    assert_eq!(b.get(), r#"{"preserved": true}"#);
+    assert!(b.get().as_ptr() >= json.as_ptr());
+    assert!(b.get().as_ptr() < json[json.len()..].as_ptr());
 }
 
 #[cfg(feature = "raw_value")]
