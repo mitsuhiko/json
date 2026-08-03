@@ -587,7 +587,9 @@ mod extension {
     use serde::ser::{SerializeExtension, Serializer};
     use serde::{Deserialize, ExtensionId, Serialize};
 
+    #[cfg(feature = "arbitrary_precision")]
     const NUMBER: ExtensionId = ExtensionId::new("serde_json/number@1");
+    #[cfg(feature = "raw_value")]
     const RAW_VALUE: ExtensionId = ExtensionId::new("serde_json/raw_value@1");
 
     struct Extended<'a> {
